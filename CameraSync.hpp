@@ -58,8 +58,7 @@ class CameraSync : public LibXR::Application {
                 &self->latest_ahrs_data_, sizeof(self->latest_ahrs_data_),
                 in_isr);
             self->camera_sync_euler.PublishFromCallback(
-                &self->latest_ahrs_data_,
-                sizeof(self->latest_ahrs_data_),
+                &self->latest_ahrs_data_, sizeof(self->latest_ahrs_data_),
                 in_isr);
             self->CameraTrig();
           }
@@ -67,7 +66,7 @@ class CameraSync : public LibXR::Application {
         this);
   }
 
-  void OnMonitor() override{};
+  void OnMonitor() override {};
 
  private:
   LibXR::GPIO* camera_sync_pin_ = nullptr;
