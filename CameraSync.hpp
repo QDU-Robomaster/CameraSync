@@ -18,8 +18,21 @@ depends: []
 #include "app_framework.hpp"
 #include "libxr_cb.hpp"
 
+/**
+ * @brief 相机同步触发模块
+ * @details 监听 BMI088 同步信号并在回调中发布姿态数据，同时翻转同步引脚。
+ */
 class CameraSync : public LibXR::Application {
  public:
+  /**
+   * @brief 构造 CameraSync 模块
+   * @param hw 硬件容器
+   * @param app 应用管理器
+   * @param camera_pin_name 相机同步引脚名
+   * @param camera_sync_topic_name 对外发布同步姿态的 Topic 名称
+   * @param ahrs_topic_name 姿态源 Topic 名称
+   * @param bmi088 BMI088 模块指针
+   */
   CameraSync(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
              const char* camera_pin_name, const char* camera_sync_topic_name,
              const char* ahrs_topic_name, BMI088* bmi088)
@@ -48,6 +61,10 @@ class CameraSync : public LibXR::Application {
     }
   }
 
+  /**
+   * @brief 获取同步回调
+   * @return LibXR::Callback<> 回调对象
+   */
   LibXR::Callback<> GetSyncCallback() {
     return LibXR::Callback<>::Create(
         [](bool in_isr, CameraSync* self) {
@@ -66,6 +83,9 @@ class CameraSync : public LibXR::Application {
         this);
   }
 
+  /**
+   * @brief 监控回调
+   */
   void OnMonitor() override {};
 
  private:
