@@ -27,7 +27,7 @@ jobs:
         with:
           repository: QDU-Robomaster/BMI088
           path: Modules/BMI088
-          ref: Sync
+          ref: master
 
       - name: Create main.cpp
         run: |
