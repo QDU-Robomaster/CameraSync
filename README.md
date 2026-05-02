@@ -1,40 +1,54 @@
 # CameraSync
 
-## 1. 模块作用
-相机同步模块。将姿态采样与相机触发时序对齐。
+MCU 侧相机同步模块。
 
-## 2. 主要函数说明
-1. GetSyncCallback: 提供 IMU 同步回调入口。
-2. CameraTrig: 翻转同步引脚并发布同步姿态。
-3. OnMonitor: 监控钩子（当前为空实现）。
+## 作用
 
-## 3. 接入步骤
-1. 添加模块并配置 camera_pin_name、camera_sync_topic_name、ahrs_topic_name。
-2. 把 BMI088 同步回调绑定到本模块。
-3. 检查同步引脚时序和 Topic 数据是否一致。
+`CameraSync` 订阅一个带 Topic envelope timestamp 的 IMU topic，按 IMU 样本分频触发相机 GPIO，并发布同步结果 topic。
 
-标准命令流程：
-    xrobot_add_mod CameraSync --instance-id camerasync
-    xrobot_gen_main
-    cube-cmake --build /home/leo/Documents/bsp-dev-c/build/debug --
+- IMU 驱动只负责正常发布传感器数据
+- 相机触发频率只由 `CameraSync.trigger_div` 控制
+- 同步结果 topic 的 envelope timestamp 就是本次触发对齐的 IMU 传感器时间
 
-## 4. 配置示例（YAML）
+## Topic
+
+输入：
+
+- `imu_topic_name`，默认 `bmi088_gyro`
+
+输出：
+
+- `camera_sync_topic_name`，默认 `camera_sync_result`
+
+输出 payload：
+
+```cpp
+struct SyncEvent {
+  uint32_t trigger_sequence;
+  uint32_t imu_sequence;
+  uint8_t pin_level;
+  uint8_t status;
+  uint16_t reserved;
+};
+```
+
+其中实际对齐的 IMU 时间不放在 payload 里，而是使用 topic 消息自带的 timestamp。
+
+## 配置示例
+
+```yaml
 module: CameraSync
 entry_header: Modules/CameraSync/CameraSync.hpp
 constructor_args:
   - camera_pin_name: "CAMERA"
-  - camera_sync_topic_name: "camera_sync_euler"
-  - ahrs_topic_name: "ahrs_quaternion"
-  - bmi088: '@&bmi088'
-template_args:
-[]
+  - camera_sync_topic_name: "camera_sync_result"
+  - imu_topic_name: "bmi088_gyro"
+  - trigger_div: 10
+template_args: []
+```
 
-## 5. 依赖与硬件
-Required Hardware:
-[]
+## 接入要求
 
-Depends:
-[]
-
-## 6. 代码入口
-Modules/CameraSync/CameraSync.hpp
+- IMU topic 必须由上游传感器模块用真实采样时间戳发布
+- AHRS topic 应继续使用对应 IMU 样本的 timestamp 发布，host 侧按 timestamp 关联
+- 本模块不依赖 `BMI088` 内部 callback，也不控制 IMU 发布频率
