@@ -63,6 +63,11 @@ public:
   static_assert(sizeof(SyncCommand) == 6);
   static_assert(sizeof(SyncEvent) == 4);
 
+  static LibXR::MicrosecondTimestamp CurrentTriggerTimestamp()
+  {
+    return active_trigger_timestamp_us_;
+  }
+
   /**
    * @brief 构造 CameraSync 模块。
    * @param hw 硬件容器
@@ -196,7 +201,11 @@ private:
 
   void TriggerCamera(bool in_isr, LibXR::MicrosecondTimestamp imu_timestamp,
                      bool publish_sync_event) {
+    const LibXR::MicrosecondTimestamp previous_timestamp =
+        active_trigger_timestamp_us_;
+    active_trigger_timestamp_us_ = imu_timestamp;
     camera_sync_pin_.Write(active_level_);
+    active_trigger_timestamp_us_ = previous_timestamp;
     pulse_hold_samples_ = min_pulse_hold_samples;
 
     if (!publish_sync_event) {
@@ -210,6 +219,9 @@ private:
     event.active_level = active_level_;
     camera_sync_topic_.PublishFromCallback(event, imu_timestamp, in_isr);
   }
+
+  static inline thread_local LibXR::MicrosecondTimestamp
+      active_trigger_timestamp_us_ = 0;
 
   LibXR::GPIO &camera_sync_pin_;
 
