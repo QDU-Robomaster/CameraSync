@@ -24,38 +24,38 @@ MCU 侧相机同步模块。
 
 - `camera_sync_topic_name`，默认 `camera_sync_result`
 
-命令 payload：
+命令消息：
 
 ```cpp
 struct SyncCommand {
-  uint8_t version;
-  uint8_t seq;
   uint8_t flags;
+  uint8_t active_level;
+  uint8_t seq;
   uint8_t sync_probe_div;
   uint8_t run_trigger_div;
-  uint8_t active_level;
 };
 ```
 
-- `version`：当前为 `1`。
-- `seq`：上位机每次同步自增的序号，MCU 在对应同步点原样回传。
-- `flags`：预留，当前为 `0`。
+- `flags`：`0` 表示普通同步命令；`RESET_TO_DEFAULT` 表示恢复构造参数里的默认触发分频。
+- `active_level`：有效触发电平。`0` 表示低有效，非 `0` 表示高有效。
+- `seq`：上位机每次同步自增的序号，MCU 在对应同步点原样回传；reset 命令不使用。
 - `sync_probe_div`：同步探针间隔，单位是当前运行分频的倍数，必须大于 `0`。
 - `run_trigger_div`：同步完成后的正式触发分频，单位是 IMU 样本数，必须大于 `0`。
-- `active_level`：有效触发电平。`0` 表示低有效，非 `0` 表示高有效。
 
-输出 payload：
+`RESET_TO_DEFAULT` 命令立即取消待执行同步，切回默认触发分频，触发 GPIO 保持无效电平；
+它不触发相机，也不发布同步结果。
+
+输出消息：
 
 ```cpp
 struct SyncEvent {
-  uint8_t version;
   uint8_t seq;
   uint8_t run_trigger_div;
   uint8_t active_level;
 };
 ```
 
-实际对齐的 IMU 时间不放在 payload 里，而是使用 topic 消息自带的 timestamp。
+实际对齐的 IMU 时间使用 topic 消息自带的 timestamp。
 普通相机触发不发布回执；只有命令对应的同步点发布 `SyncEvent`。
 
 ## 时序语义

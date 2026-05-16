@@ -34,34 +34,36 @@ class CameraSync : public LibXR::Application {
 public:
   using ImuSample = Eigen::Matrix<float, 3, 1>;
 
+  enum SyncCommandFlags : uint8_t {
+    RESET_TO_DEFAULT = 1U << 0,
+  };
+
   /**
    * @brief 上位机同步命令。
-   * @details sync_probe_div 是当前运行分频的探针倍率，run_trigger_div 是同步完成后
-   *          的正常触发分频，单位是 IMU 样本数。active_level 是相机有效触发电平，
-   *          seq 由上位机自增，MCU 在对应同步点回传同一个 seq。
+   * @details flags 为 0 时执行普通同步；RESET_TO_DEFAULT 只恢复默认触发分频，
+   *          不触发相机也不发布 SyncEvent。sync_probe_div 是当前运行分频的探针
+   *          倍率，run_trigger_div 是同步完成后的正常触发分频，单位是 IMU 样本数。
    */
   struct SyncCommand {
-    uint8_t version = 1;
-    uint8_t seq = 0;
     uint8_t flags = 0;
+    uint8_t active_level = 1;
+    uint8_t seq = 0;
     uint8_t sync_probe_div = 3;
     uint8_t run_trigger_div = 50;
-    uint8_t active_level = 1;
   };
 
   /**
    * @brief 同步点回执。
-   * @details 实际同步时间使用 topic 消息自带 timestamp，不再复制到 payload 里。
+   * @details 实际同步时间使用 topic 消息自带 timestamp。
    */
   struct SyncEvent {
-    uint8_t version = 1;
     uint8_t seq = 0;
     uint8_t run_trigger_div = 50;
     uint8_t active_level = 1;
   };
 
-  static_assert(sizeof(SyncCommand) == 6);
-  static_assert(sizeof(SyncEvent) == 4);
+  static_assert(sizeof(SyncCommand) == 5);
+  static_assert(sizeof(SyncEvent) == 3);
 
   /**
    * @brief 构造 CameraSync 模块。
@@ -82,6 +84,7 @@ public:
         imu_topic_(imu_topic_name, sizeof(ImuSample)),
         command_topic_(camera_sync_command_topic_name, sizeof(SyncCommand)),
         camera_sync_topic_(camera_sync_topic_name, sizeof(SyncEvent)),
+        default_trigger_div_(ClampDiv(trigger_div)),
         trigger_div_(ClampDiv(trigger_div)) {
     ASSERT(trigger_div != 0);
 
@@ -108,9 +111,9 @@ public:
   void OnMonitor() override {}
 
 private:
-  static constexpr uint8_t command_version = 1;
   static constexpr uint8_t default_run_trigger_div = 50;
   static constexpr uint8_t min_pulse_hold_samples = 1;
+  static constexpr uint8_t known_command_flags = RESET_TO_DEFAULT;
 
   enum class SyncState : uint8_t { NORMAL = 0, WAIT_PROBE_EDGE = 1 };
 
@@ -135,9 +138,18 @@ private:
   }
 
   void OnCommand(const SyncCommand &command) {
+    if ((command.flags & static_cast<uint8_t>(~known_command_flags)) != 0) {
+      return;
+    }
+
+    active_level_ = command.active_level == 0 ? 0U : 1U;
+    if ((command.flags & RESET_TO_DEFAULT) != 0) {
+      ResetToDefault();
+      return;
+    }
+
     // 上位机应等待回执后再发下一条命令；模块只保留最新一条待执行命令。
-    if (command.version != command_version || command.sync_probe_div == 0 ||
-        command.run_trigger_div == 0) {
+    if (command.sync_probe_div == 0 || command.run_trigger_div == 0) {
       return;
     }
 
@@ -146,6 +158,18 @@ private:
     pending_command_.active_level = command.active_level == 0 ? 0U : 1U;
     pending_command_.seq = command.seq;
     pending_command_ready_ = true;
+  }
+
+  void ResetToDefault() {
+    pending_command_ready_ = false;
+    sync_state_ = SyncState::NORMAL;
+    trigger_div_ = default_trigger_div_;
+    active_probe_interval_samples_ = default_trigger_div_;
+    pending_run_div_ = default_trigger_div_;
+    samples_since_trigger_ = 0;
+    pulse_hold_samples_ = 0;
+    active_seq_ = 0;
+    camera_sync_pin_.Write(!active_level_);
   }
 
   void StartPendingCommandIfIdle() {
@@ -204,7 +228,6 @@ private:
     }
 
     SyncEvent event;
-    event.version = command_version;
     event.seq = active_seq_;
     event.run_trigger_div = pending_run_div_;
     event.active_level = active_level_;
@@ -219,6 +242,7 @@ private:
   LibXR::Topic::Callback imu_callback_;
   LibXR::Topic::Callback command_callback_;
 
+  uint8_t default_trigger_div_ = default_run_trigger_div;
   uint8_t trigger_div_ = default_run_trigger_div;
   uint16_t samples_since_trigger_ = 0;
   uint8_t pulse_hold_samples_ = 0;
