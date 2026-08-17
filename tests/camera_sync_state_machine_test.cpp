@@ -308,9 +308,6 @@ void TestInvalidCommandsAndStatesAreIgnored()
   auto actions = machine.OnImu(100);
   ExpectSingleEvent(actions, Operation::STOP_TRIGGER, 3, 1, 0, 0, 100,
                     "only the first pending command may execute");
-
-  machine.OnCommand(Stop(4));
-  Expect(!machine.CommandPending(), "new STOP is invalid while STOPPED");
 }
 
 void TestPreviousRetryDoesNotBlockNextCommand()
@@ -330,6 +327,32 @@ void TestPreviousRetryDoesNotBlockNextCommand()
                     "next command must still execute exactly once");
 }
 
+void TestFreshStopRecoversAfterHostRestart()
+{
+  StateMachine machine(10);
+
+  machine.OnCommand(Stop(40, 0));
+  auto actions = machine.OnImu(100);
+  ExpectSingleEvent(actions, Operation::STOP_TRIGGER, 40, 0, 0, 0, 100,
+                    "first host must stop the trigger");
+
+  machine.OnCommand(Stop(1, 1));
+  Expect(machine.CommandPending(),
+         "a restarted host must be able to queue a fresh STOP while STOPPED");
+  actions = machine.OnImu(200);
+  Expect(machine.State() == SyncState::STOPPED,
+         "fresh STOP must preserve the safe STOPPED state");
+  Expect(actions.gpio_write_count == 1 && actions.gpio_levels[0] == 0,
+         "fresh STOP must reassert the requested inactive GPIO level");
+  ExpectSingleEvent(actions, Operation::STOP_TRIGGER, 1, 1, 0, 0, 200,
+                    "fresh STOP must acknowledge the restarted host sequence");
+
+  machine.OnCommand(Start(2, 10));
+  actions = machine.OnImu(300);
+  ExpectSingleEvent(actions, Operation::START_TRIGGER, 2, 1, 10, 0, 300,
+                    "restarted host must be able to START after the fresh STOP ACK");
+}
+
 }  // namespace
 
 int main()
@@ -345,6 +368,7 @@ int main()
   TestDuplicateCommandsReplayOriginalAckOnly();
   TestInvalidCommandsAndStatesAreIgnored();
   TestPreviousRetryDoesNotBlockNextCommand();
+  TestFreshStopRecoversAfterHostRestart();
   std::cout << "CameraSync state-machine tests passed\n";
   return EXIT_SUCCESS;
 }

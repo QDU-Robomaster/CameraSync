@@ -55,7 +55,7 @@ struct SyncEvent {
 
 | operation | 有效状态 | seq | reserved | trigger_period_us |
 | --- | --- | ---: | ---: | ---: |
-| `STOP_TRIGGER` | `RUNNING` | 非零 | `0` | `0` |
+| `STOP_TRIGGER` | `RUNNING` 或 `STOPPED` | 非零 | `0` | `0` |
 | `START_TRIGGER` | `STOPPED` | 非零 | `0` | 非零 |
 | `FRAME_TRIGGER` | 不能作为命令 | - | - | - |
 
@@ -81,7 +81,9 @@ GPIO 边沿。
 
 `STOP_TRIGGER` 在命令后的下一条 IMU 消息处生效：GPIO 保持无效，后续不再触发，ACK 的
 `effective_period_us` 为 `0`，`trigger_sequence` 是停止前最后一个真实边沿序号。若同一条
-IMU 消息本来恰好到期，STOP 优先，不产生该边沿。
+IMU 消息本来恰好到期，STOP 优先，不产生该边沿。即使状态已经是 `STOPPED`，带新 `seq`
+的 STOP 仍会在下一条 IMU 消息重新确认无效电平并返回新 ACK，使重启后的 Host 能从
+STOP/START 握手恢复。
 
 `START_TRIGGER` 仅在 `STOPPED` 有效，也在下一条 IMU 消息处安装新周期并 ACK。ACK 样本
 不会产生边沿，`trigger_sequence` 为 `0`；第一条边沿必须等待从 ACK timestamp 起满一个
@@ -95,6 +97,7 @@ IMU 消息本来恰好到期，STOP 优先，不产生该边沿。
 - 最后一个已完成命令的相同键副本只重放原 ACK 和原 envelope timestamp
 - ACK 重放不重复 GPIO 操作，也不重置触发相位或边沿序号
 - `FRAME_TRIGGER` 是遥测事件，不会覆盖最后一个已完成命令的 ACK
+- `STOPPED` 状态下的新 STOP 序号是新的 desired-state 命令，不属于 ACK 重放
 
 命令通道必须保持顺序。Host 应等待当前 `seq` 的 ACK 后再发送下一条操作；超时只重发
 字段完全相同的当前命令，且重试次数应有界。
