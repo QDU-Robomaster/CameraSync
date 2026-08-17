@@ -223,7 +223,7 @@ class StateMachine
     switch (operation)
     {
       case Operation::STOP_TRIGGER:
-        return state_ == SyncState::RUNNING;
+        return true;
       case Operation::START_TRIGGER:
         return state_ == SyncState::STOPPED;
       case Operation::FRAME_TRIGGER:
