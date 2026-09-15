@@ -3,14 +3,6 @@
 // clang-format off
 /* === MODULE MANIFEST V2 ===
 module_description: 由带时间戳 IMU 消息驱动的 MCU 侧相机周期触发模块
-constructor_args:
-  - camera_pin_name: "CAMERA"
-  - camera_sync_topic_name: "camera_sync_result"
-  - imu_topic_name: "bmi088_gyro"
-  - trigger_period_us: 50000
-  - camera_sync_command_topic_name: "camera_sync_command"
-template_args: []
-required_hardware: []
 depends: []
 === END MANIFEST === */
 // clang-format on
@@ -19,9 +11,9 @@ depends: []
 #include <cstdint>
 
 #include "CameraSyncStateMachine.hpp"
-#include "app_framework.hpp"
 #include "gpio.hpp"
 #include "libxr.hpp"
+#include "libxr_def.hpp"
 #include "transform.hpp"
 
 /**
@@ -30,7 +22,7 @@ depends: []
  *          START_TRIGGER 在下一条 IMU 消息处生效并回执；每个真实 GPIO 触发边沿
  *          都发布 FRAME_TRIGGER，事件 timestamp 即产生边沿的 IMU 时间戳。
  */
-class CameraSync : public LibXR::Application
+class CameraSync
 {
  public:
   using ImuSample = Eigen::Matrix<float, 3, 1>;
@@ -40,19 +32,15 @@ class CameraSync : public LibXR::Application
 
   /**
    * @brief 构造 CameraSync 模块。
-   * @param hw 硬件容器。
-   * @param app 应用管理器。
-   * @param camera_pin_name 相机触发 GPIO 名称。
    * @param camera_sync_topic_name 同步事件 Topic 名称。
    * @param imu_topic_name 作为时间基准的 IMU Topic 名称。
    * @param trigger_period_us 上电默认触发周期，单位微秒，必须非零。
    * @param camera_sync_command_topic_name 上位机控制命令 Topic 名称。
    */
-  CameraSync(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
-             const char* camera_pin_name, const char* camera_sync_topic_name,
+  CameraSync(LibXR::GPIO& external_camera_pin_name, const char* camera_sync_topic_name,
              const char* imu_topic_name, uint32_t trigger_period_us,
              const char* camera_sync_command_topic_name)
-      : camera_sync_pin_(*hw.template FindOrExit<LibXR::GPIO>({camera_pin_name})),
+      : camera_sync_pin_(external_camera_pin_name),
         imu_topic_(LibXR::Topic::CreateTopic<ImuSample>(imu_topic_name)),
         command_topic_(
             LibXR::Topic::CreateTopic<SyncCommand>(camera_sync_command_topic_name)),
@@ -76,12 +64,10 @@ class CameraSync : public LibXR::Application
            const SyncCommand& command) { self->OnCommand(in_isr, command); },
         this);
     command_topic_.RegisterCallback(command_callback_);
-
-    app.Register(*this);
   }
 
   /** @brief CameraSync 当前不输出周期监控。 */
-  void OnMonitor() override {}
+  void OnMonitor() {}
 
  private:
   void OnCommand(bool in_isr, const SyncCommand& command)

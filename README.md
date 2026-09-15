@@ -1,5 +1,16 @@
 # CameraSync
 
+## Static assembly source line
+
+This source line uses explicit C++ constructor dependencies and ordered instance
+arguments. Inspect the current primary header with `xrobot_mod_parser --path .`;
+its declarations, not old manifest/config examples, define the interface.
+Historical HardwareContainer/ApplicationManager examples below apply only to the
+older dynamic source tags. Device/protocol descriptions remain relevant.
+See the XRobot [migration guide](https://github.com/xrobot-org/XRobot/blob/dev/MIGRATION.md).
+Compilation is not hardware validation; retain version-specific board evidence.
+
+
 `CameraSync` 在 MCU 侧使用 IMU Topic 的 envelope timestamp 推进相机触发周期。模块只包含
 `STOP_TRIGGER`、`START_TRIGGER` 两条控制命令，并为每个真实 GPIO 触发边沿发布
 `FRAME_TRIGGER` 事件。
