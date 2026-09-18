@@ -30,24 +30,29 @@ class CameraSync
   using SyncCommand = CameraSyncDetail::SyncCommand;
   using SyncEvent = CameraSyncDetail::SyncEvent;
 
+  struct Param
+  {
+    const char* camera_sync_topic_name;  ///< 同步事件 Topic 名称。
+    const char* imu_topic_name;  ///< 作为时间基准的 IMU Topic 名称。
+    uint32_t trigger_period_us;  ///< 上电默认触发周期，单位微秒，必须非零。
+    const char* camera_sync_command_topic_name;  ///< 上位机控制命令 Topic 名称。
+  };
+
   /**
    * @brief 构造 CameraSync 模块。
-   * @param camera_sync_topic_name 同步事件 Topic 名称。
-   * @param imu_topic_name 作为时间基准的 IMU Topic 名称。
-   * @param trigger_period_us 上电默认触发周期，单位微秒，必须非零。
-   * @param camera_sync_command_topic_name 上位机控制命令 Topic 名称。
+   * @param param Value configuration.
    */
-  CameraSync(LibXR::GPIO& external_camera_pin_name, const char* camera_sync_topic_name,
-             const char* imu_topic_name, uint32_t trigger_period_us,
-             const char* camera_sync_command_topic_name)
-      : camera_sync_pin_(external_camera_pin_name),
-        imu_topic_(LibXR::Topic::CreateTopic<ImuSample>(imu_topic_name)),
+  CameraSync(
+      LibXR::GPIO& camera_pin,
+      const Param& param = {.camera_sync_topic_name = "camera_sync_result", .imu_topic_name = "bmi088_gyro", .trigger_period_us = 50000, .camera_sync_command_topic_name = "camera_sync_command"})
+      : camera_sync_pin_(camera_pin),
+        imu_topic_(LibXR::Topic::CreateTopic<ImuSample>(param.imu_topic_name)),
         command_topic_(
-            LibXR::Topic::CreateTopic<SyncCommand>(camera_sync_command_topic_name)),
-        camera_sync_topic_(LibXR::Topic::CreateTopic<SyncEvent>(camera_sync_topic_name)),
-        state_machine_(trigger_period_us)
+            LibXR::Topic::CreateTopic<SyncCommand>(param.camera_sync_command_topic_name)),
+        camera_sync_topic_(LibXR::Topic::CreateTopic<SyncEvent>(param.camera_sync_topic_name)),
+        state_machine_(param.trigger_period_us)
   {
-    ASSERT(trigger_period_us != 0);
+    ASSERT(param.trigger_period_us != 0);
 
     camera_sync_pin_.SetConfig({.direction = LibXR::GPIO::Direction::OUTPUT_PUSH_PULL,
                                 .pull = LibXR::GPIO::Pull::NONE});
