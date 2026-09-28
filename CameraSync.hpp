@@ -71,9 +71,6 @@ class CameraSync
     command_topic_.RegisterCallback(command_callback_);
   }
 
-  /** @brief CameraSync 当前不输出周期监控。 */
-  void OnMonitor() {}
-
  private:
   void OnCommand(bool in_isr, const SyncCommand& command)
   {
