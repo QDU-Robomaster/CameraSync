@@ -64,12 +64,16 @@ class CameraSync
    */
   CameraSync(
       LibXR::GPIO& camera_pin,
-      const Param& param = {.camera_sync_topic_name = "camera_sync_result", .imu_topic_name = "bmi088_gyro", .trigger_period_us = 50000, .camera_sync_command_topic_name = "camera_sync_command"})
+      const Param& param = {.camera_sync_topic_name = "camera_sync_result",
+                            .imu_topic_name = "bmi088_gyro",
+                            .trigger_period_us = 50000,
+                            .camera_sync_command_topic_name = "camera_sync_command"})
       : camera_sync_pin_(camera_pin),
         imu_topic_(LibXR::Topic::CreateTopic<ImuSample>(param.imu_topic_name)),
         command_topic_(
             LibXR::Topic::CreateTopic<SyncCommand>(param.camera_sync_command_topic_name)),
-        camera_sync_topic_(LibXR::Topic::CreateTopic<SyncEvent>(param.camera_sync_topic_name)),
+        camera_sync_topic_(
+            LibXR::Topic::CreateTopic<SyncEvent>(param.camera_sync_topic_name)),
         state_machine_(param.trigger_period_us)
   {
     ASSERT(param.trigger_period_us != 0);
