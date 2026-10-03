@@ -2,7 +2,7 @@
 
 // clang-format off
 /* === MODULE MANIFEST V2 ===
-module_description: 由带时间戳 IMU 消息驱动的 MCU 侧相机周期触发模块
+module_description: 由带时间戳 IMU 消息驱动的 MCU 侧相机周期触发模块 / MCU-side camera trigger Module driven by timestamped IMU messages
 depends: []
 === END MANIFEST === */
 // clang-format on
