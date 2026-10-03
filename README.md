@@ -211,10 +211,4 @@ Dependencies: LibXR (the `Eigen::Matrix` IMU sample type comes from the Eigen bu
 
 Hardware: one GPIO output wired to the hardware trigger input of the camera, and an IMU Topic that publishes `Eigen::Matrix<float, 3, 1>` with the sensor sampling timestamp.
 
-`tests/` is a standalone CMake project that tests the state machine `CameraSyncStateMachine.hpp` (standard library only), with the commands:
-
-```sh
-cmake -S tests -B build/tests
-cmake --build build/tests
-ctest --test-dir build/tests
-```
+`tests/` is a standalone CMake project that tests the state machine `CameraSyncStateMachine.hpp` (standard library only), with the commands in the code block above.
