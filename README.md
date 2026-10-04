@@ -197,7 +197,13 @@ modules:
 
 依赖：LibXR（IMU 样本类型 `Eigen::Matrix` 来自 LibXR 自带的 Eigen）。
 
-硬件：一个 GPIO 输出，连接相机的硬件触发输入；一个以传感器采样 timestamp 发布 `Eigen::Matrix<float, 3, 1>` 的 IMU Topic。
+硬件：一个 GPIO 输出，连接相机的硬件触发输入；一个以传感器采样时间戳发布 `Eigen::Matrix<float, 3, 1>` 的 IMU Topic。
+
+Dependencies: LibXR (the `Eigen::Matrix` IMU sample type comes from the Eigen bundled with LibXR).
+
+Hardware: one GPIO output wired to the hardware trigger input of the camera, and an IMU Topic that publishes `Eigen::Matrix<float, 3, 1>` with the sensor sampling timestamp.
+
+## 9. 测试 / Tests
 
 `tests/` 是独立的 CMake 工程，测试状态机 `CameraSyncStateMachine.hpp`（仅使用标准库），命令如下：
 
@@ -206,9 +212,5 @@ cmake -S tests -B build/tests
 cmake --build build/tests
 ctest --test-dir build/tests
 ```
-
-Dependencies: LibXR (the `Eigen::Matrix` IMU sample type comes from the Eigen bundled with LibXR).
-
-Hardware: one GPIO output wired to the hardware trigger input of the camera, and an IMU Topic that publishes `Eigen::Matrix<float, 3, 1>` with the sensor sampling timestamp.
 
 `tests/` is a standalone CMake project that tests the state machine `CameraSyncStateMachine.hpp` (standard library only), with the commands in the code block above.
