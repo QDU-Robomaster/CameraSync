@@ -8,33 +8,60 @@
 namespace CameraSyncDetail
 {
 
-/** @brief CameraSync wire protocol operation. */
+/**
+ * @brief CameraSync 通信协议的操作码。
+ *        CameraSync wire protocol operation.
+ */
 enum class Operation : uint8_t
 {
-  STOP_TRIGGER = 0,   ///< Stop camera trigger output at an IMU sample.
-  START_TRIGGER = 1,  ///< Start camera trigger output with a new period.
-  FRAME_TRIGGER = 2,  ///< A real camera trigger edge was emitted.
+  STOP_TRIGGER = 0,   ///< 在下一条 IMU 样本处停止触发输出
+                      ///< Stop trigger output at the next IMU sample
+  START_TRIGGER = 1,  ///< 以新周期启动触发输出
+                      ///< Start trigger output with a new period
+  FRAME_TRIGGER = 2,  ///< 已发出一个真实触发边沿
+                      ///< A real trigger edge was emitted
 };
 
-/** @brief Host-to-MCU camera trigger command with a fixed 8-byte layout. */
+/**
+ * @brief 上位机到 MCU 的触发命令，固定 8 字节布局。
+ *        Host-to-MCU trigger command with a fixed 8-byte layout.
+ *
+ * @details `seq` 非零，与 `operation` 组成幂等键；`reserved` 须为 0；
+ *          `trigger_period_us` 对 START_TRIGGER 非零，对 STOP_TRIGGER 为 0。
+ *          `seq` is non-zero and forms the idempotence key together with `operation`;
+ *          `reserved` must be 0; `trigger_period_us` is non-zero for START_TRIGGER and
+ *          0 for STOP_TRIGGER.
+ */
 struct SyncCommand
 {
-  Operation operation = Operation::STOP_TRIGGER;
-  uint8_t active_level = 1;
-  uint8_t seq = 0;
-  uint8_t reserved = 0;
-  uint32_t trigger_period_us = 0;
+  Operation operation = Operation::STOP_TRIGGER;  ///< 操作码 Operation
+  uint8_t active_level = 1;                       ///< 有效电平 Active level (0 or 1)
+  uint8_t seq = 0;                                ///< 命令序号 Command sequence number
+  uint8_t reserved = 0;                           ///< 保留 Reserved
+  uint32_t trigger_period_us = 0;                 ///< 触发周期 Trigger period (us)
 };
 
-/** @brief MCU-to-host command acknowledgement or trigger event. */
+/**
+ * @brief MCU 到上位机的命令 ACK 或触发边沿事件，固定 12 字节布局。
+ *        MCU-to-host command acknowledgement or trigger event with a fixed 12-byte
+ *        layout.
+ *
+ * @details `seq` 在 ACK 中是所答复命令的序号，在 FRAME_TRIGGER 中是最近生效的
+ *          START_TRIGGER 序号；`effective_period_us` 停止时为 0；`trigger_sequence`
+ *          计数真实触发边沿，START_TRIGGER 的 ACK 中为 0。
+ *          In an ACK, `seq` is the sequence number of the answered command; in a
+ *          FRAME_TRIGGER it is the sequence number of the most recently applied
+ *          START_TRIGGER. `effective_period_us` is 0 when stopped. `trigger_sequence`
+ *          counts real trigger edges and is 0 in the ACK of START_TRIGGER.
+ */
 struct SyncEvent
 {
-  uint8_t seq = 0;
-  Operation operation = Operation::STOP_TRIGGER;
-  uint8_t active_level = 1;
-  uint8_t reserved = 0;
-  uint32_t effective_period_us = 0;
-  uint32_t trigger_sequence = 0;
+  uint8_t seq = 0;                                ///< 命令序号 Command sequence number
+  Operation operation = Operation::STOP_TRIGGER;  ///< 操作码 Operation
+  uint8_t active_level = 1;                       ///< 有效电平 Active level
+  uint8_t reserved = 0;                           ///< 保留 Reserved
+  uint32_t effective_period_us = 0;               ///< 生效周期 Effective period (us)
+  uint32_t trigger_sequence = 0;                  ///< 边沿计数 Edge count
 };
 
 static_assert(sizeof(SyncCommand) == 8);
