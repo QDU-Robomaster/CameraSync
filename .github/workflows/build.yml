@@ -8,3 +8,4 @@ jobs:
     uses: xrobot-org/XRobot/.github/workflows/module-ci.yml@v1
     with:
       template-args: '[]'
+      ctest-regex: '^camera_sync_'

@@ -82,28 +82,48 @@ static_assert(offsetof(SyncEvent, reserved) == 3);
 static_assert(offsetof(SyncEvent, effective_period_us) == 4);
 static_assert(offsetof(SyncEvent, trigger_sequence) == 8);
 
+/**
+ * @brief 触发输出的运行状态。
+ *        Run state of the trigger output.
+ */
 enum class SyncState : uint8_t
 {
-  RUNNING = 0,
-  STOPPED = 1,
+  RUNNING = 0,  ///< 按周期输出触发边沿 / Trigger edges are emitted every period
+  STOPPED = 1,  ///< 不输出边沿，引脚保持无效电平 / No edges; the pin stays inactive
 };
 
+/**
+ * @brief 带时间戳的事件，时间戳为产生该事件的 IMU 样本时间。
+ *        Event with the timestamp of the IMU sample that produced it.
+ */
 struct StampedSyncEvent
 {
-  SyncEvent event{};
-  uint64_t timestamp_us = 0;
+  SyncEvent event{};          ///< ACK 或边沿事件 / ACK or edge event
+  uint64_t timestamp_us = 0;  ///< IMU 样本时间 (µs) / IMU sample time (µs)
 };
 
+/**
+ * @brief 状态机一次调用要求调用方执行的动作，按记录顺序执行：先写 GPIO，再发布事件。
+ *        Actions one state-machine call asks the caller to perform, in recorded order:
+ *        GPIO writes first, then events.
+ *
+ * @details 容量按最坏情况取定：一次 `OnImu` 最多先结束上一个脉冲、再写一次新电平（两次
+ *          GPIO），最多一个事件。超出容量的记录被丢弃，状态机不会产生这种情况。
+ *          Capacity covers the worst case: one `OnImu` ends the previous pulse and then
+ *          writes one new level (two GPIO writes), with at most one event. Records
+ *          beyond capacity are dropped; the state machine never produces them.
+ */
 struct SyncActions
 {
-  static constexpr size_t max_gpio_writes = 2;
-  static constexpr size_t max_events = 1;
+  static constexpr size_t max_gpio_writes = 2;  ///< GPIO 写入容量 / GPIO write capacity
+  static constexpr size_t max_events = 1;       ///< 事件容量 / Event capacity
 
-  std::array<uint8_t, max_gpio_writes> gpio_levels{};
-  size_t gpio_write_count = 0;
-  std::array<StampedSyncEvent, max_events> events{};
-  size_t event_count = 0;
+  std::array<uint8_t, max_gpio_writes> gpio_levels{};  ///< 依次写入的电平 / Levels
+  size_t gpio_write_count = 0;                         ///< 有效写入数 / Valid writes
+  std::array<StampedSyncEvent, max_events> events{};   ///< 依次发布的事件 / Events
+  size_t event_count = 0;                              ///< 有效事件数 / Valid events
 
+  /// 记录一次 GPIO 写入 / Record one GPIO write.
   void WriteGpio(uint8_t level)
   {
     if (gpio_write_count < gpio_levels.size())
@@ -112,6 +132,7 @@ struct SyncActions
     }
   }
 
+  /// 记录一个要发布的事件 / Record one event to publish.
   void Publish(const SyncEvent& event, uint64_t timestamp_us)
   {
     if (event_count < events.size())
@@ -121,15 +142,65 @@ struct SyncActions
   }
 };
 
+/**
+ * @brief 相机触发状态机：以 IMU 样本时间为时钟，不直接访问硬件。
+ *        Camera trigger state machine clocked by IMU sample times; it touches no
+ *        hardware.
+ *
+ * @details 时间只在 `OnImu` 中推进。触发边沿只能落在 IMU 样本上：累计经过的时间达到一个
+ *          周期就在该样本输出边沿，超出的部分结转到下一周期，所以平均周期准确，单个间隔
+ *          以 IMU 间隔为粒度变化。边沿保持到下一个样本，脉冲宽度为一个 IMU 间隔。命令先
+ *          登记，在下一个 IMU 样本生效并回 ACK。上电即以默认周期运行，边沿事件的 `seq`
+ *          为 0，直到第一条 START_TRIGGER 生效。
+ *          Time advances only in `OnImu`. Edges fall on IMU samples: once the elapsed
+ *          time reaches a period an edge is emitted on that sample and the excess carries
+ *          into the next period, so the mean period is exact while single intervals vary
+ *          in steps of the IMU interval. An edge lasts until the next sample, so the
+ *          pulse is one IMU interval wide. A command is held and applied, with its ACK,
+ *          at the next IMU sample. After power-up the machine runs at the default
+ *          period, and edge events carry `seq` 0 until the first START_TRIGGER applies.
+ *
+ *          不是线程安全的；调用方串行化 `OnCommand` 与 `OnImu`（CameraSync 用互斥锁）。
+ *          Not thread-safe; the caller serialises `OnCommand` and `OnImu` (CameraSync
+ *          holds a mutex).
+ */
 class StateMachine
 {
  public:
+  /**
+   * @brief 以默认周期构造，处于 RUNNING。
+   *        Construct running at the default period.
+   * @param default_trigger_period_us 默认周期 (µs)；0 按 1 µs 处理，CameraSync 在构造时
+   *                                  拒绝 0。
+   *                                  Default period (µs); 0 is treated as 1 µs, and
+   *                                  CameraSync rejects 0 at construction.
+   */
   explicit StateMachine(uint32_t default_trigger_period_us)
       : trigger_period_us_(default_trigger_period_us == 0 ? 1U
                                                           : default_trigger_period_us)
   {
   }
 
+  /**
+   * @brief 登记一条上位机命令，本次调用不改变触发输出。
+   *        Register one host command; this call does not change the trigger output.
+   *
+   * @details 以 (`operation`, `seq`) 为幂等键：
+   *          - 与待生效命令相同：忽略（等待它生效）；
+   *          - 与最近一条已生效命令相同：立即重发该命令的原 ACK（含原时间戳），状态不变；
+   *          - 字段无效、已有待生效命令，或 RUNNING 时收到 START_TRIGGER：
+   *            丢弃且不回 ACK，由上位机超时重发；
+   *          - 否则登记，在下一个 `OnImu` 生效。
+   *          The idempotence key is (`operation`, `seq`):
+   *          - same as the pending command: ignored (it is about to apply);
+   *          - same as the last applied command: its original ACK, with its original
+   *            timestamp, is published again and the state does not change;
+   *          - invalid fields, a command already pending, or START_TRIGGER while
+   *            RUNNING: dropped without an ACK; the host resends on timeout;
+   *          - otherwise registered, to apply at the next `OnImu`.
+   * @return 要执行的动作（只可能是重发的 ACK）。
+   *         Actions to perform (only a replayed ACK is possible).
+   */
   SyncActions OnCommand(const SyncCommand& command)
   {
     SyncActions actions;
@@ -157,6 +228,24 @@ class StateMachine
     return actions;
   }
 
+  /**
+   * @brief 以一个 IMU 样本推进状态机。
+   *        Advance the state machine by one IMU sample.
+   *
+   * @details 依次：结束上一个脉冲；有待生效命令则执行它并发 ACK，本样本不再输出边沿；
+   *          否则在 RUNNING 下累计时间，到周期时输出边沿并发布 FRAME_TRIGGER。样本时间
+   *          倒退或刚开始运行时只重定相位，不输出边沿。两个样本之间跨过多个周期时只输出
+   *          一个边沿，`trigger_sequence` 只加一，没有发出的边沿不补发。
+   *          In order: end the previous pulse; if a command is pending, apply it and
+   *          publish its ACK, with no edge on this sample; otherwise, while RUNNING,
+   *          accumulate time and emit an edge with a FRAME_TRIGGER when a period is
+   *          reached. A sample time that goes backwards, or the first sample of a run,
+   *          only re-bases the phase without an edge. When several periods pass between
+   *          two samples only one edge is emitted and `trigger_sequence` grows by one;
+   *          missed edges are not made up.
+   * @param imu_timestamp_us IMU 样本时间 (µs)。IMU sample time (µs).
+   * @return 要执行的动作。Actions to perform.
+   */
   SyncActions OnImu(uint64_t imu_timestamp_us)
   {
     SyncActions actions;
@@ -189,6 +278,9 @@ class StateMachine
       return actions;
     }
 
+    // 到周期就出边沿；跨过多个周期时取余数结转，不补发缺失的边沿。
+    // Emit an edge when a period is reached; the remainder carries over when several
+    // periods passed, and missed edges are not made up.
     const uint64_t elapsed_us = imu_timestamp_us - last_imu_timestamp_us_;
     last_imu_timestamp_us_ = imu_timestamp_us;
 
@@ -205,15 +297,24 @@ class StateMachine
     return actions;
   }
 
+  /// 运行状态 / Run state.
   [[nodiscard]] SyncState State() const { return state_; }
+  /// 当前周期 (µs) / Current period (µs).
   [[nodiscard]] uint32_t TriggerPeriodUs() const { return trigger_period_us_; }
+  /// 本周期已经过的时间 (µs) / Time elapsed in the current period (µs).
   [[nodiscard]] uint64_t PhaseElapsedUs() const { return phase_elapsed_us_; }
+  /// 有效电平 / Active level.
   [[nodiscard]] uint8_t ActiveLevel() const { return active_level_; }
+  /// 本次运行已输出的边沿数 / Edges emitted in the current run.
   [[nodiscard]] uint32_t TriggerSequence() const { return trigger_sequence_; }
+  /// 引脚是否处于有效电平 / Whether the pin is at the active level.
   [[nodiscard]] bool PulseActive() const { return pulse_active_; }
+  /// 是否有待生效的命令 / Whether a command is waiting to apply.
   [[nodiscard]] bool CommandPending() const { return pending_command_ready_; }
 
  private:
+  /// 最近一条已生效命令及其 ACK，用于重发 / Last applied command and its ACK, for
+  /// replay.
   struct CompletedCommand
   {
     bool valid = false;
@@ -245,6 +346,8 @@ class StateMachine
     return false;
   }
 
+  // STOP 任何时候都可以；START 只能在停止后（重启必须先 STOP）。
+  // STOP is always allowed; START only when stopped (a restart is STOP then START).
   bool OperationAllowed(Operation operation) const
   {
     switch (operation)
@@ -318,6 +421,9 @@ class StateMachine
     RememberCompleted(command, event, imu_timestamp_us);
   }
 
+  // 边沿事件带最近一条生效 START 的序号，上位机据此丢弃别的运行（如重启前）的边沿。
+  // Edge events carry the seq of the START in effect, so the host can drop edges of
+  // another run (for example from before a restart).
   void EmitFrameTrigger(uint64_t imu_timestamp_us, SyncActions& actions)
   {
     actions.WriteGpio(active_level_);
@@ -343,19 +449,19 @@ class StateMachine
     };
   }
 
-  uint32_t trigger_period_us_ = 1;
-  uint64_t phase_elapsed_us_ = 0;
-  uint64_t last_imu_timestamp_us_ = 0;
-  uint8_t active_level_ = 1;
-  uint8_t active_start_seq_ = 0;
-  uint32_t trigger_sequence_ = 0;
-  bool phase_initialized_ = false;
-  bool pulse_active_ = false;
+  uint32_t trigger_period_us_ = 1;      ///< 当前周期 (µs) / Current period (µs)
+  uint64_t phase_elapsed_us_ = 0;       ///< 本周期已过时间 / Elapsed in period
+  uint64_t last_imu_timestamp_us_ = 0;  ///< 上一个样本时间 / Previous sample time
+  uint8_t active_level_ = 1;            ///< 有效电平 / Active level
+  uint8_t active_start_seq_ = 0;        ///< 生效 START 的序号 / Applied START seq
+  uint32_t trigger_sequence_ = 0;       ///< 本次运行边沿数 / Edges in this run
+  bool phase_initialized_ = false;      ///< 相位已对齐 / Phase based on a sample
+  bool pulse_active_ = false;           ///< 引脚为有效电平 / Pin at active level
 
-  bool pending_command_ready_ = false;
-  SyncCommand pending_command_{};
-  SyncState state_ = SyncState::RUNNING;
-  CompletedCommand last_completed_command_{};
+  bool pending_command_ready_ = false;         ///< 有待生效命令 / Command pending
+  SyncCommand pending_command_{};              ///< 待生效命令 / Pending command
+  SyncState state_ = SyncState::RUNNING;       ///< 运行状态 / Run state
+  CompletedCommand last_completed_command_{};  ///< 用于重发 ACK / For ACK replay
 };
 
 }  // namespace CameraSyncDetail

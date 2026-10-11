@@ -34,3 +34,10 @@ add_library(${_DEPS_TARGET} INTERFACE)
 
 # Register to global
 set_property(GLOBAL APPEND PROPERTY XR_MODULE_DEPS ${_DEPS_TARGET})
+
+# 状态机测试只在主机构建；MCU 交叉编译时跳过。
+# The state-machine test builds on the host only; cross builds for the MCU skip it.
+if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
+  add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/tests
+                   ${CMAKE_CURRENT_BINARY_DIR}/CameraSync_tests)
+endif()

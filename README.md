@@ -142,7 +142,7 @@ CameraSync(LibXR::GPIO& camera_pin,
 
 - `camera_sync_topic_name`：ACK 与边沿事件的输出 Topic 名称，默认 `"camera_sync_result"`。
 - `imu_topic_name`：作为时间基准的 IMU Topic 名称，默认 `"bmi088_gyro"`。
-- `trigger_period_us`：上电默认触发周期，单位 µs，默认 `50000`（20 Hz），需非零（`ASSERT`）。
+- `trigger_period_us`：上电默认触发周期，单位 µs，默认 `50000`（20 Hz），需非零（`REQUIRE`，Release 下同样检查）。
 - `camera_sync_command_topic_name`：上位机控制命令的 Topic 名称，默认 `"camera_sync_command"`。
 
 Dependencies:
@@ -153,7 +153,7 @@ Configuration parameters (`Param`):
 
 - `camera_sync_topic_name`: name of the output Topic for ACKs and edge events, default `"camera_sync_result"`.
 - `imu_topic_name`: name of the IMU Topic used as the time base, default `"bmi088_gyro"`.
-- `trigger_period_us`: default trigger period after power-up in µs, default `50000` (20 Hz); must be non-zero (`ASSERT`).
+- `trigger_period_us`: default trigger period after power-up in µs, default `50000` (20 Hz); must be non-zero (`REQUIRE`, checked in Release builds as well).
 - `camera_sync_command_topic_name`: name of the host command Topic, default `"camera_sync_command"`.
 
 ## 6. Topic
@@ -205,7 +205,7 @@ Hardware: one GPIO output wired to the hardware trigger input of the camera, and
 
 ## 9. 测试 / Tests
 
-`tests/` 是独立的 CMake 工程，测试状态机 `CameraSyncStateMachine.hpp`（仅使用标准库），命令如下：
+`tests/` 测试状态机 `CameraSyncStateMachine.hpp`（仅使用标准库）。主机构建打开 `BUILD_TESTING` 时模块会加入 `camera_sync_state_machine_test`，模块 CI 运行它；MCU 交叉编译时不加入。也可以作为独立的 CMake 工程运行：
 
 ```sh
 cmake -S tests -B build/tests
@@ -213,4 +213,4 @@ cmake --build build/tests
 ctest --test-dir build/tests
 ```
 
-`tests/` is a standalone CMake project that tests the state machine `CameraSyncStateMachine.hpp` (standard library only), with the commands in the code block above.
+`tests/` tests the state machine `CameraSyncStateMachine.hpp` (standard library only). A host build with `BUILD_TESTING` adds `camera_sync_state_machine_test`, which Module CI runs; cross builds for the MCU leave it out. It also runs as a standalone CMake project with the commands in the code block above.

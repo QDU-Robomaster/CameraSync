@@ -59,8 +59,9 @@ class CameraSync
    *
    * @param camera_pin 连接相机硬件触发输入的 GPIO。
    *                   GPIO wired to the hardware trigger input of the camera.
-   * @param param 配置参数；trigger_period_us 为 0 时触发 ASSERT。
-   *              Configuration parameters; ASSERT fails when trigger_period_us is 0.
+   * @param param 配置参数；trigger_period_us 为 0 时 REQUIRE 失败（Release 下同样检查）。
+   *              Configuration parameters; REQUIRE fails when trigger_period_us is 0,
+   *              in Release builds as well.
    */
   CameraSync(
       LibXR::GPIO& camera_pin,
@@ -76,7 +77,7 @@ class CameraSync
             LibXR::Topic::CreateTopic<SyncEvent>(param.camera_sync_topic_name)),
         state_machine_(param.trigger_period_us)
   {
-    ASSERT(param.trigger_period_us != 0);
+    REQUIRE(param.trigger_period_us != 0);
 
     camera_sync_pin_.SetConfig({.direction = LibXR::GPIO::Direction::OUTPUT_PUSH_PULL,
                                 .pull = LibXR::GPIO::Pull::NONE});
