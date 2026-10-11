@@ -5,6 +5,13 @@
 #include <cstdint>
 #include <type_traits>
 
+/**
+ * @brief CameraSync 的通信协议与触发状态机。只用标准库，可在主机上测试；上位机的
+ *        CameraFrameSync 也引用这里的协议类型。
+ *        Wire protocol and trigger state machine of CameraSync. Standard library only,
+ *        so it is testable on the host; the host-side CameraFrameSync uses the same
+ *        protocol types.
+ */
 namespace CameraSyncDetail
 {
 
@@ -322,11 +329,16 @@ class StateMachine
     StampedSyncEvent result{};
   };
 
+  // 幂等键只比较操作码与序号；其余字段不同的重发视为同一条命令。
+  // The idempotence key compares only operation and seq; a resend with other fields
+  // changed counts as the same command.
   static bool SameCommandKey(const SyncCommand& lhs, const SyncCommand& rhs)
   {
     return lhs.operation == rhs.operation && lhs.seq == rhs.seq;
   }
 
+  // 字段约束见 README 的命令表；FRAME_TRIGGER 只作为事件，不能作为命令。
+  // Field constraints as in the README command table; FRAME_TRIGGER is an event only.
   static bool ValidCommand(const SyncCommand& command)
   {
     if (command.active_level > 1 || command.seq == 0 || command.reserved != 0)
@@ -362,6 +374,8 @@ class StateMachine
     return false;
   }
 
+  // 每个样本先结束上一个脉冲，所以脉冲宽度为一个 IMU 间隔。
+  // Every sample first ends the previous pulse, so a pulse lasts one IMU interval.
   void FinishPulse(SyncActions& actions)
   {
     if (!pulse_active_)
@@ -372,6 +386,8 @@ class StateMachine
     actions.WriteGpio(static_cast<uint8_t>(!active_level_));
   }
 
+  // 以该样本为周期起点：下一个边沿在一个完整周期之后。
+  // Make this sample the start of a period: the next edge comes one full period later.
   void RebasePhase(uint64_t imu_timestamp_us)
   {
     phase_initialized_ = true;
@@ -379,6 +395,11 @@ class StateMachine
     phase_elapsed_us_ = 0;
   }
 
+  // 停止并写无效电平；ACK 带停止前最后一个边沿的序号。已停止时收到新序号的 STOP 也走
+  // 这里，重写无效电平并回新 ACK，重启后的上位机据此重新握手。
+  // Stop and write the inactive level; the ACK carries the number of the last edge
+  // before the stop. A STOP with a new seq while already stopped also comes here and
+  // rewrites the inactive level with a new ACK, so a restarted host can handshake again.
   void ApplyStop(const SyncCommand& command, uint64_t imu_timestamp_us,
                  SyncActions& actions)
   {
@@ -399,6 +420,9 @@ class StateMachine
     RememberCompleted(command, event, imu_timestamp_us);
   }
 
+  // 安装新周期与有效电平，边沿序号清零，以 ACK 样本为相位起点；ACK 样本本身不出边沿。
+  // Install the new period and active level, reset the edge count and start the phase at
+  // the ACK sample; the ACK sample itself emits no edge.
   void ApplyStart(const SyncCommand& command, uint64_t imu_timestamp_us,
                   SyncActions& actions)
   {
@@ -439,6 +463,9 @@ class StateMachine
     actions.Publish(event, imu_timestamp_us);
   }
 
+  // 只保留最近一条：上位机收到当前命令的 ACK 后才发下一条，重发只针对最近一条。
+  // Only the latest is kept: the host sends the next command after the ACK of the
+  // current one, so resends only concern the latest.
   void RememberCompleted(const SyncCommand& command, const SyncEvent& event,
                          uint64_t timestamp_us)
   {

@@ -1,3 +1,8 @@
+// CameraSyncDetail::StateMachine 的单元测试：以合成的 IMU 时间戳与命令驱动状态机，检查
+// 输出的 GPIO 电平、事件内容与时间戳。时间单位为 µs。
+// Unit tests of CameraSyncDetail::StateMachine: synthetic IMU timestamps and commands
+// drive the state machine, and the GPIO levels, event fields and timestamps it outputs
+// are checked. Times are in µs.
 #include <cstddef>
 #include <cstdlib>
 #include <iostream>
@@ -47,6 +52,8 @@ SyncCommand Start(uint8_t seq, uint32_t period_us, uint8_t active_level = 1)
           .trigger_period_us = period_us};
 }
 
+/// 动作中恰有一个事件，且各字段与时间戳符合预期 / Exactly one event with the expected
+/// fields and timestamp.
 void ExpectSingleEvent(const SyncActions& actions, Operation operation, uint8_t seq,
                        uint8_t active_level, uint32_t effective_period_us,
                        uint32_t trigger_sequence, uint64_t timestamp_us,
@@ -67,6 +74,8 @@ void ExpectSingleEvent(const SyncActions& actions, Operation operation, uint8_t 
   Expect(stamped.timestamp_us == timestamp_us, context);
 }
 
+// 线上格式：8 B 命令、12 B 事件、字段偏移与操作码取值。
+// Wire format: 8-byte command, 12-byte event, field offsets and operation values.
 void TestWireLayout()
 {
   static_assert(sizeof(SyncCommand) == 8);
@@ -82,6 +91,9 @@ void TestWireLayout()
          "FRAME_TRIGGER wire value must be 2");
 }
 
+// 上电默认运行：首个样本只定相位，满周期出边沿，下一个样本结束脉冲，seq 为 0。
+// Power-up run: the first sample sets the phase, an edge comes after a full period,
+// the next sample ends the pulse, and seq is 0.
 void TestDefaultPeriodPublishesEveryRealEdge()
 {
   StateMachine machine(10);
@@ -106,6 +118,9 @@ void TestDefaultPeriodPublishesEveryRealEdge()
                     "each default real edge must advance its sequence");
 }
 
+// 样本迟到跨过多个周期：只出一个边沿，序号只加一，余数结转。
+// A late sample spanning several periods: one edge, the count grows by one, the
+// remainder carries over.
 void TestLateSampleDoesNotSynthesizeMissedEdges()
 {
   StateMachine machine(10);
@@ -129,6 +144,8 @@ void TestLateSampleDoesNotSynthesizeMissedEdges()
          "late cadence must preserve phase without a burst replay");
 }
 
+// 时间戳倒退：不出边沿，以该样本重新定相位。
+// A timestamp going backwards: no edge, the phase restarts from that sample.
 void TestTimestampRollbackRebasesPhase()
 {
   StateMachine machine(10);
@@ -146,6 +163,9 @@ void TestTimestampRollbackRebasesPhase()
                     "rebased phase must trigger after one full period");
 }
 
+// STOP 只登记、下一个样本生效；ACK 带最后一个边沿的序号，之后不再出边沿。
+// STOP is held until the next sample; its ACK carries the last edge number and no
+// edges follow.
 void TestStopAckCarriesLastRealEdgeSequence()
 {
   StateMachine machine(10);
@@ -175,6 +195,8 @@ void TestStopAckCarriesLastRealEdgeSequence()
          "STOPPED state must not emit camera triggers");
 }
 
+// 同一样本上 STOP 与到期边沿同时出现时 STOP 优先。
+// STOP wins over an edge due on the same sample.
 void TestStopPreemptsEdgeDueOnSameSample()
 {
   StateMachine machine(10);
@@ -187,6 +209,9 @@ void TestStopPreemptsEdgeDueOnSameSample()
   Expect(machine.TriggerSequence() == 0, "preempted ideal deadline is not a real edge");
 }
 
+// START（低有效）：ACK 样本不出边沿，满一个新周期后出第一个边沿，序号从 1 起。
+// START (active low): no edge on the ACK sample, the first edge one new period later,
+// numbered from 1.
 void TestStartUsesFreshTimestampPhaseAndSequence()
 {
   StateMachine machine(10);
@@ -213,6 +238,8 @@ void TestStartUsesFreshTimestampPhaseAndSequence()
                     "first post-START edge must begin at sequence one");
 }
 
+// 新的 START 清零上一次运行的边沿序号。
+// A new START resets the edge count of the previous run.
 void TestStartResetsPreviousRunSequence()
 {
   StateMachine machine(10);
@@ -233,6 +260,11 @@ void TestStartResetsPreviousRunSequence()
                     "new run must restart FRAME_TRIGGER sequence at one");
 }
 
+// 重复命令：待生效时保留首条内容；已生效后重发原 ACK 与原时间戳，不重复 GPIO 动作；
+// 边沿事件不替换缓存的 ACK。
+// Duplicate commands: a pending one keeps the first payload; after it applies, the
+// original ACK and timestamp are replayed without GPIO effects; edge events do not
+// replace the cached ACK.
 void TestDuplicateCommandsReplayOriginalAckOnly()
 {
   StateMachine machine(10);
@@ -271,6 +303,9 @@ void TestDuplicateCommandsReplayOriginalAckOnly()
                     "FRAME telemetry must not replace completed START ACK");
 }
 
+// 无效字段、FRAME_TRIGGER 作命令、运行中 START、已有待生效命令时的新命令都被丢弃。
+// Invalid fields, FRAME_TRIGGER as a command, START while running and a new command
+// while one is pending are all dropped.
 void TestInvalidCommandsAndStatesAreIgnored()
 {
   StateMachine machine(10);
@@ -310,6 +345,8 @@ void TestInvalidCommandsAndStatesAreIgnored()
                     "only the first pending command may execute");
 }
 
+// 对上一条命令的重发只重发 ACK，不妨碍下一条命令执行。
+// A resend of the previous command only replays its ACK and does not block the next.
 void TestPreviousRetryDoesNotBlockNextCommand()
 {
   StateMachine machine(10);
@@ -327,6 +364,9 @@ void TestPreviousRetryDoesNotBlockNextCommand()
                     "next command must still execute exactly once");
 }
 
+// 上位机重启：已停止时新序号的 STOP 重写无效电平并回新 ACK，之后可以 START。
+// Host restart: while stopped, a STOP with a new seq rewrites the inactive level with a
+// new ACK, and START works afterwards.
 void TestFreshStopRecoversAfterHostRestart()
 {
   StateMachine machine(10);
