@@ -3,7 +3,9 @@
 // Unit tests of CameraSyncDetail::StateMachine: synthetic IMU timestamps and commands
 // drive the state machine, and the GPIO levels, event fields and timestamps it outputs
 // are checked. Times are in µs.
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
@@ -142,6 +144,45 @@ void TestLateSampleDoesNotSynthesizeMissedEdges()
                     "missed ideal periods must not inflate real-edge sequence");
   Expect(machine.PhaseElapsedUs() == 5,
          "late cadence must preserve phase without a burst replay");
+}
+
+// 周期为 IMU 间隔的整数倍时，截止时刻紧贴样本，几十微秒的时间戳抖动会让边沿晚一个
+// 样本；晚了不补，相邻边沿间隔不短于周期减半个 IMU 间隔，平均周期仍接近设定值。
+// With a period that is a multiple of the IMU interval the deadlines sit next to
+// samples, and tens of microseconds of timestamp jitter delay an edge by one sample;
+// the delay is not made up, so no two edges are closer than the period minus half an
+// IMU interval, and the mean period stays close to the setting.
+void TestTimestampJitterKeepsEdgeSpacing()
+{
+  constexpr uint32_t PERIOD_US = 2000;
+  StateMachine machine(PERIOD_US);
+  uint64_t last_edge = 0;
+  uint64_t first_edge = 0;
+  uint64_t min_interval = UINT64_MAX;
+  uint32_t edges = 0;
+  for (uint64_t k = 0; k < 20000; ++k)
+  {
+    // 1002 µs 采样，每 23 个样本有一个时间戳晚 46 µs / 1002 µs sampling, every 23rd
+    // stamp 46 µs late.
+    const uint64_t t = 1000000 + 1002 * k + (k % 23 == 0 ? 46 : 0);
+    const auto actions = machine.OnImu(t);
+    if (actions.event_count == 1)
+    {
+      if (edges > 0)
+      {
+        min_interval = std::min(min_interval, t - last_edge);
+      }
+      else
+      {
+        first_edge = t;
+      }
+      last_edge = t;
+      ++edges;
+    }
+  }
+  Expect(min_interval >= PERIOD_US - 501, "edges closer than the period minus half a sample");
+  const double mean = static_cast<double>(last_edge - first_edge) / (edges - 1);
+  Expect(mean > PERIOD_US * 0.99 && mean < PERIOD_US * 1.03, "mean period off the setting");
 }
 
 // 时间戳倒退：不出边沿，以该样本重新定相位。
@@ -400,6 +441,7 @@ int main()
   TestWireLayout();
   TestDefaultPeriodPublishesEveryRealEdge();
   TestLateSampleDoesNotSynthesizeMissedEdges();
+  TestTimestampJitterKeepsEdgeSpacing();
   TestTimestampRollbackRebasesPhase();
   TestStopAckCarriesLastRealEdgeSequence();
   TestStopPreemptsEdgeDueOnSameSample();

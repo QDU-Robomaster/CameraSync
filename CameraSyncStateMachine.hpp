@@ -155,14 +155,15 @@ struct SyncActions
  *        hardware.
  *
  * @details 时间只在 `OnImu` 中推进。触发边沿只能落在 IMU 样本上：累计经过的时间达到一个
- *          周期就在该样本输出边沿，超出的部分结转到下一周期，所以平均周期准确，单个间隔
- *          以 IMU 间隔为粒度变化。边沿保持到下一个样本，脉冲宽度为一个 IMU 间隔。命令先
+ *          周期就在该样本输出边沿，超出的部分（最多半个 IMU 间隔）结转到下一周期，所以
+ *          平均周期接近设定值，单个间隔以 IMU 间隔为粒度变化，且不短于周期减半个 IMU 间隔。边沿保持到下一个样本，脉冲宽度为一个 IMU 间隔。命令先
  *          登记，在下一个 IMU 样本生效并回 ACK。上电即以默认周期运行，边沿事件的 `seq`
  *          为 0，直到第一条 START_TRIGGER 生效。
  *          Time advances only in `OnImu`. Edges fall on IMU samples: once the elapsed
- *          time reaches a period an edge is emitted on that sample and the excess carries
- *          into the next period, so the mean period is exact while single intervals vary
- *          in steps of the IMU interval. An edge lasts until the next sample, so the
+ *          time reaches a period an edge is emitted on that sample and the excess, at most
+ *          half an IMU interval, carries into the next period, so the mean period stays
+ *          close to the setting while single intervals vary in steps of the IMU interval
+ *          and are never shorter than the period minus half an IMU interval. An edge lasts until the next sample, so the
  *          pulse is one IMU interval wide. A command is held and applied, with its ACK,
  *          at the next IMU sample. After power-up the machine runs at the default
  *          period, and edge events carry `seq` 0 until the first START_TRIGGER applies.
@@ -285,9 +286,13 @@ class StateMachine
       return actions;
     }
 
-    // 到周期就出边沿；跨过多个周期时取余数结转，不补发缺失的边沿。
-    // Emit an edge when a period is reached; the remainder carries over when several
-    // periods passed, and missed edges are not made up.
+    // 到周期就出边沿，超出的部分结转到下一周期，但最多结转半个 IMU 间隔：时间戳抖动可能
+    // 让边沿晚一个样本，全额结转会让下一个边沿只隔一个样本，相机来不及响应。跨过多个周期
+    // 时也不补发缺失的边沿。
+    // Emit an edge when a period is reached and carry the excess into the next period,
+    // but at most half an IMU interval: timestamp jitter can delay an edge by one
+    // sample, and carrying all of it would put the next edge one sample later, too soon
+    // for the camera. Missed edges are not made up when several periods passed.
     const uint64_t elapsed_us = imu_timestamp_us - last_imu_timestamp_us_;
     last_imu_timestamp_us_ = imu_timestamp_us;
 
@@ -299,7 +304,8 @@ class StateMachine
       return actions;
     }
 
-    phase_elapsed_us_ = (elapsed_us - until_trigger_us) % trigger_period_us_;
+    const uint64_t excess_us = (elapsed_us - until_trigger_us) % trigger_period_us_;
+    phase_elapsed_us_ = excess_us < elapsed_us / 2 ? excess_us : elapsed_us / 2;
     EmitFrameTrigger(imu_timestamp_us, actions);
     return actions;
   }

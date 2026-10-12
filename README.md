@@ -78,7 +78,7 @@ The command fields are constrained as follows; a command that violates the const
 - `seq` 是最近一次生效的 `START_TRIGGER.seq`，上电默认运行阶段为 `0`。
 - `trigger_sequence` 从 `1` 开始，每个边沿加一，按 `uint32_t` 回绕。
 
-触发脉冲在下一条 IMU 消息到达时恢复到无效电平，所以脉冲宽度为一个 IMU 间隔。边沿只能落在 IMU 消息上，平均周期等于 `trigger_period_us`，单个间隔以 IMU 间隔为粒度变化。一条 IMU 消息跨过多个周期时，模块只产生一个边沿，`trigger_sequence` 加一，余下的时间计入下一个周期。IMU 时间戳倒退时，模块不产生边沿，并以该消息作为新的周期起点。
+触发脉冲在下一条 IMU 消息到达时恢复到无效电平，所以脉冲宽度为一个 IMU 间隔。边沿只能落在 IMU 消息上，单个间隔以 IMU 间隔为粒度变化。超出期限的时间结转到下一个周期，但最多结转半个 IMU 间隔：周期是 IMU 间隔的整数倍时，期限紧贴 IMU 消息，几十微秒的时间戳抖动会让某个边沿晚一条消息，全额结转会让下一个边沿只隔一条消息，相机来不及响应。所以相邻边沿的间隔不短于 `trigger_period_us` 减半个 IMU 间隔，平均周期接近 `trigger_period_us`，边沿晚一条消息时略长。一条 IMU 消息跨过多个周期时，模块只产生一个边沿，`trigger_sequence` 加一，余下的时间计入下一个周期。IMU 时间戳倒退时，模块不产生边沿，并以该消息作为新的周期起点。
 
 `STOP_TRIGGER` 在命令后的下一条 IMU 消息处生效：GPIO 保持无效电平，之后不再触发，ACK 的 `effective_period_us` 为 `0`，`trigger_sequence` 是停止前最后一个边沿的序号。同一条 IMU 消息上恰好有边沿到期时，STOP 优先，该边沿不产生。状态已经是 `STOPPED` 时，带新 `seq` 的 STOP 仍在下一条 IMU 消息处重新写入无效电平并回复新的 ACK，重启后的上位机据此完成 STOP/START 握手。
 
@@ -93,7 +93,7 @@ Every edge actually emitted also publishes one `FRAME_TRIGGER`:
 - `seq` is the `seq` of the most recently applied `START_TRIGGER`; it is `0` in the default running phase after power-up.
 - `trigger_sequence` starts at `1`, grows by one with each edge and wraps as a `uint32_t`.
 
-The trigger pulse returns to the inactive level when the next IMU message arrives, so a pulse lasts one IMU interval. Edges fall on IMU messages: the mean period equals `trigger_period_us` while single intervals vary in steps of the IMU interval. When one IMU message spans several periods, the Module produces one edge, `trigger_sequence` grows by one, and the remaining time counts toward the next period. When the IMU timestamp moves backwards, the Module produces no edge and starts a new period at that message.
+The trigger pulse returns to the inactive level when the next IMU message arrives, so a pulse lasts one IMU interval. Edges fall on IMU messages, so single intervals vary in steps of the IMU interval. Time past a deadline carries into the next period, but at most half an IMU interval: with a period that is a multiple of the IMU interval the deadlines sit next to IMU messages, tens of microseconds of timestamp jitter can delay an edge by one message, and carrying all of it would put the next edge only one message later, too soon for the camera. Adjacent edges are therefore never closer than `trigger_period_us` minus half an IMU interval, and the mean period stays close to `trigger_period_us`, slightly longer when an edge is delayed. When one IMU message spans several periods, the Module produces one edge, `trigger_sequence` grows by one, and the remaining time counts toward the next period. When the IMU timestamp moves backwards, the Module produces no edge and starts a new period at that message.
 
 `STOP_TRIGGER` takes effect at the next IMU message after the command: the GPIO stays at the inactive level, no further edges follow, the ACK carries `effective_period_us` of `0`, and `trigger_sequence` is the number of the last edge before the stop. When an edge is due on the same IMU message, STOP takes precedence and that edge is not produced. When the state is already `STOPPED`, a STOP with a new `seq` still rewrites the inactive level at the next IMU message and is answered with a new ACK, so that a restarted host can complete the STOP/START handshake.
 
