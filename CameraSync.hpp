@@ -7,6 +7,7 @@ depends: []
 === END MANIFEST === */
 // clang-format on
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -20,13 +21,26 @@ depends: []
  * @brief MCU 侧相机周期触发模块。
  *        MCU-side periodic camera trigger Module.
  *
- * @details 模块以 IMU Topic envelope timestamp 推进触发周期。STOP_TRIGGER 和
- *          START_TRIGGER 在下一条 IMU 消息处生效并回执；每个真实 GPIO 触发边沿
- *          都发布 FRAME_TRIGGER，事件 timestamp 即产生边沿的 IMU 时间戳。
- *          The Module advances the trigger period with the envelope timestamp of the
- *          IMU Topic. STOP_TRIGGER and START_TRIGGER take effect at the next IMU
- *          message and are acknowledged; every real GPIO trigger edge publishes a
- *          FRAME_TRIGGER whose timestamp is the IMU timestamp that produced the edge.
+ * @details 模块以 IMU Topic 消息的时间戳为时钟，按周期翻转一个 GPIO 触发相机，每个
+ *          触发边沿发布一个 FRAME_TRIGGER，其时间戳为产生该边沿的 IMU 消息时间戳。上位机
+ *          的 STOP_TRIGGER 与 START_TRIGGER 在下一条 IMU 消息处生效，并回复 ACK。时序与
+ *          命令规则见 CameraSyncDetail::StateMachine。
+ *          The Module uses the timestamps of the IMU Topic messages as its clock and
+ *          toggles one GPIO every period to trigger the camera; each trigger edge
+ *          publishes a FRAME_TRIGGER stamped with the time of the IMU message that
+ *          produced it. STOP_TRIGGER and START_TRIGGER from the host take effect at the
+ *          next IMU message and are answered with an ACK. See
+ *          CameraSyncDetail::StateMachine for the timing and command rules.
+ *
+ *          两个订阅回调在发布者的上下文中同步执行，线程或中断均可。状态机只由 IMU 回调访问：
+ *          命令回调把命令放进单格信箱，下一条 IMU 消息到达时取出执行；信箱已有命令时新命令
+ *          丢弃，由上位机超时重发（上位机同一时刻只有一条未确认命令）。
+ *          Both subscription callbacks run synchronously in the publisher's context,
+ *          thread or interrupt. Only the IMU callback touches the state machine: the
+ *          command callback puts the command into a one-slot mailbox that the next IMU
+ *          message takes and executes; a command arriving while the mailbox is full is
+ *          dropped and resent by the host after its timeout (the host keeps at most one
+ *          unacknowledged command).
  */
 class CameraSync
 {
@@ -57,10 +71,20 @@ class CameraSync
    *        Construct CameraSync: configure the GPIO as push-pull output driven low and
    *        subscribe to the IMU and command Topics.
    *
+   * @details 构造时写的低电平与有效电平无关；第一条 STOP_TRIGGER 或
+   *          START_TRIGGER 生效时，按命令中的有效电平写无效电平。上电后即以
+   *          `trigger_period_us` 运行。Topic 回调注册后不注销，实例与程序同寿命。
+   *          The low level written here does not depend on the active level; the first
+   *          STOP_TRIGGER or START_TRIGGER to apply writes the inactive level of the
+   *          active level it carries. After power-up the Module runs at
+   *          `trigger_period_us`. The Topic callbacks stay registered, so the instance
+   *          lives as long as the program.
+   *
    * @param camera_pin 连接相机硬件触发输入的 GPIO。
    *                   GPIO wired to the hardware trigger input of the camera.
-   * @param param 配置参数；trigger_period_us 为 0 时触发 ASSERT。
-   *              Configuration parameters; ASSERT fails when trigger_period_us is 0.
+   * @param param 配置参数；trigger_period_us 为 0 时 REQUIRE 失败（Release 下同样检查）。
+   *              Configuration parameters; REQUIRE fails when trigger_period_us is 0,
+   *              in Release builds as well.
    */
   CameraSync(
       LibXR::GPIO& camera_pin,
@@ -76,7 +100,7 @@ class CameraSync
             LibXR::Topic::CreateTopic<SyncEvent>(param.camera_sync_topic_name)),
         state_machine_(param.trigger_period_us)
   {
-    ASSERT(param.trigger_period_us != 0);
+    REQUIRE(param.trigger_period_us != 0);
 
     camera_sync_pin_.SetConfig({.direction = LibXR::GPIO::Direction::OUTPUT_PUSH_PULL,
                                 .pull = LibXR::GPIO::Pull::NONE});
@@ -96,31 +120,39 @@ class CameraSync
   }
 
  private:
-  /// 处理上位机命令：状态机更新后在锁外执行动作。
-  /// Handle a host command; the actions run after the state lock is released.
+  /// 收下上位机命令，留给下一条 IMU 消息执行。
+  /// Take a host command for the next IMU message to execute.
   void OnCommand(bool in_isr, const SyncCommand& command)
   {
-    CameraSyncDetail::SyncActions actions;
+    UNUSED(in_isr);
+    // 单格信箱：上一条命令还没被 IMU 回调取走时丢弃新命令，由上位机超时重发。
+    // One-slot mailbox: a command arriving before the IMU callback took the previous one
+    // is dropped; the host resends it after its timeout.
+    if (command_ready_.load(std::memory_order_acquire))
     {
-      LibXR::Mutex::LockGuard lock(state_machine_mutex_);
-      actions = state_machine_.OnCommand(command);
+      return;
     }
-    ApplyActions(actions, in_isr);
+    command_slot_ = command;
+    command_ready_.store(true, std::memory_order_release);
   }
 
-  /// 以 IMU timestamp 推进状态机：处理触发周期、命令生效与脉冲复位。
-  /// Advance the state machine with the IMU timestamp: trigger period, command
-  /// application and pulse reset.
+  /// 以 IMU 消息时间戳推进状态机：结束上一个脉冲、执行待生效命令、按周期输出边沿。
+  /// Advance the state machine with the IMU message time: end the previous pulse,
+  /// apply a pending command, and emit an edge when a period is reached.
   void OnImuMessage(bool in_isr, LibXR::MicrosecondTimestamp imu_timestamp)
   {
-    CameraSyncDetail::SyncActions actions;
+    if (command_ready_.load(std::memory_order_acquire))
     {
-      LibXR::Mutex::LockGuard lock(state_machine_mutex_);
-      actions = state_machine_.OnImu(static_cast<uint64_t>(imu_timestamp));
+      const SyncCommand command = command_slot_;
+      command_ready_.store(false, std::memory_order_release);
+      ApplyActions(state_machine_.OnCommand(command), in_isr);
     }
-    ApplyActions(actions, in_isr);
+    ApplyActions(state_machine_.OnImu(static_cast<uint64_t>(imu_timestamp)), in_isr);
   }
 
+  /// 按状态机给出的顺序写 GPIO、发布事件；事件时间戳取自状态机（ACK 重发时为原时间戳）。
+  /// Write the GPIO and publish the events in the order the state machine gave; the
+  /// event timestamps come from the state machine (the original one for a replayed ACK).
   void ApplyActions(const CameraSyncDetail::SyncActions& actions, bool in_isr)
   {
     for (size_t i = 0; i < actions.gpio_write_count; ++i)
@@ -135,14 +167,16 @@ class CameraSync
     }
   }
 
-  LibXR::GPIO& camera_sync_pin_;
+  LibXR::GPIO& camera_sync_pin_;  ///< 相机触发输入 / Camera trigger input
 
-  LibXR::Topic imu_topic_;
-  LibXR::Topic command_topic_;
-  LibXR::Topic camera_sync_topic_;
-  LibXR::Topic::Callback imu_callback_;
-  LibXR::Topic::Callback command_callback_;
+  LibXR::Topic imu_topic_;                   ///< 时间基准（订阅）/ Time base (subscribed)
+  LibXR::Topic command_topic_;               ///< 上位机命令（订阅）/ Host commands
+  LibXR::Topic camera_sync_topic_;           ///< ACK 与边沿（发布）/ ACKs and edges
+  LibXR::Topic::Callback imu_callback_;      ///< IMU 订阅回调 / IMU callback
+  LibXR::Topic::Callback command_callback_;  ///< 命令订阅回调 / Command callback
 
-  LibXR::Mutex state_machine_mutex_{};
-  CameraSyncDetail::StateMachine state_machine_;
+  SyncCommand command_slot_{};               ///< 待执行命令 / Command waiting for the IMU
+  std::atomic<bool> command_ready_{false};   ///< 信箱有命令 / Mailbox holds a command
+  CameraSyncDetail::StateMachine state_machine_;  ///< 触发逻辑（只在 IMU 回调中访问）/
+                                                  ///< Trigger logic (IMU callback only)
 };
