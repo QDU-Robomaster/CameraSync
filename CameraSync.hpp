@@ -7,6 +7,7 @@ depends: []
 === END MANIFEST === */
 // clang-format on
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -31,12 +32,15 @@ depends: []
  *          next IMU message and are answered with an ACK. See
  *          CameraSyncDetail::StateMachine for the timing and command rules.
  *
- *          两个订阅回调在发布者的线程中同步执行，状态机由一个 Mutex 串行访问，所以 IMU
- *          与命令 Topic 须在线程上下文中发布。GPIO 写入与事件发布在释放锁之后执行。
- *          Both subscription callbacks run synchronously on the publisher's thread and
- *          the state machine is serialised by a Mutex, so the IMU and command Topics
- *          are published from thread context. GPIO writes and event publication run
- *          after the lock is released.
+ *          两个订阅回调在发布者的上下文中同步执行，线程或中断均可。状态机只由 IMU 回调访问：
+ *          命令回调把命令放进单格信箱，下一条 IMU 消息到达时取出执行；信箱已有命令时新命令
+ *          丢弃，由上位机超时重发（上位机同一时刻只有一条未确认命令）。
+ *          Both subscription callbacks run synchronously in the publisher's context,
+ *          thread or interrupt. Only the IMU callback touches the state machine: the
+ *          command callback puts the command into a one-slot mailbox that the next IMU
+ *          message takes and executes; a command arriving while the mailbox is full is
+ *          dropped and resent by the host after its timeout (the host keeps at most one
+ *          unacknowledged command).
  */
 class CameraSync
 {
@@ -116,16 +120,20 @@ class CameraSync
   }
 
  private:
-  /// 处理上位机命令：状态机更新后在锁外执行动作。
-  /// Handle a host command; the actions run after the state lock is released.
+  /// 收下上位机命令，留给下一条 IMU 消息执行。
+  /// Take a host command for the next IMU message to execute.
   void OnCommand(bool in_isr, const SyncCommand& command)
   {
-    CameraSyncDetail::SyncActions actions;
+    UNUSED(in_isr);
+    // 单格信箱：上一条命令还没被 IMU 回调取走时丢弃新命令，由上位机超时重发。
+    // One-slot mailbox: a command arriving before the IMU callback took the previous one
+    // is dropped; the host resends it after its timeout.
+    if (command_ready_.load(std::memory_order_acquire))
     {
-      LibXR::Mutex::LockGuard lock(state_machine_mutex_);
-      actions = state_machine_.OnCommand(command);
+      return;
     }
-    ApplyActions(actions, in_isr);
+    command_slot_ = command;
+    command_ready_.store(true, std::memory_order_release);
   }
 
   /// 以 IMU 消息时间戳推进状态机：结束上一个脉冲、执行待生效命令、按周期输出边沿。
@@ -133,12 +141,13 @@ class CameraSync
   /// apply a pending command, and emit an edge when a period is reached.
   void OnImuMessage(bool in_isr, LibXR::MicrosecondTimestamp imu_timestamp)
   {
-    CameraSyncDetail::SyncActions actions;
+    if (command_ready_.load(std::memory_order_acquire))
     {
-      LibXR::Mutex::LockGuard lock(state_machine_mutex_);
-      actions = state_machine_.OnImu(static_cast<uint64_t>(imu_timestamp));
+      const SyncCommand command = command_slot_;
+      command_ready_.store(false, std::memory_order_release);
+      ApplyActions(state_machine_.OnCommand(command), in_isr);
     }
-    ApplyActions(actions, in_isr);
+    ApplyActions(state_machine_.OnImu(static_cast<uint64_t>(imu_timestamp)), in_isr);
   }
 
   /// 按状态机给出的顺序写 GPIO、发布事件；事件时间戳取自状态机（ACK 重发时为原时间戳）。
@@ -166,6 +175,8 @@ class CameraSync
   LibXR::Topic::Callback imu_callback_;      ///< IMU 订阅回调 / IMU callback
   LibXR::Topic::Callback command_callback_;  ///< 命令订阅回调 / Command callback
 
-  LibXR::Mutex state_machine_mutex_{};  ///< 串行化两个回调 / Serialises both callbacks
-  CameraSyncDetail::StateMachine state_machine_;  ///< 触发逻辑 / Trigger logic
+  SyncCommand command_slot_{};               ///< 待执行命令 / Command waiting for the IMU
+  std::atomic<bool> command_ready_{false};   ///< 信箱有命令 / Mailbox holds a command
+  CameraSyncDetail::StateMachine state_machine_;  ///< 触发逻辑（只在 IMU 回调中访问）/
+                                                  ///< Trigger logic (IMU callback only)
 };

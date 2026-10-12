@@ -6,11 +6,11 @@
 
 CameraSync 以 IMU Topic 消息的时间戳为时钟，按周期在一个 GPIO 上输出相机触发脉冲。每个实际输出的触发边沿发布一个 `FRAME_TRIGGER` 事件，事件时间戳为产生该边沿的 IMU 消息时间戳，上位机据此得到每帧图像的触发时刻。上位机通过命令 Topic 发送 `STOP_TRIGGER` 与 `START_TRIGGER`，每条命令在下一条 IMU 消息处生效并回复一个 ACK。
 
-构造时，GPIO 配置为推挽输出并写低电平（与有效电平无关，第一条命令生效时按命令中的有效电平写无效电平），随后订阅 IMU Topic 与命令 Topic。两个订阅都是同步回调，在发布者的线程中执行，状态机由一个 Mutex 串行访问，所以这两个 Topic 须在线程上下文中发布。GPIO 写入与事件发布在释放锁之后执行，事件通过 `PublishFromCallback` 发布。
+构造时，GPIO 配置为推挽输出并写低电平（与有效电平无关，第一条命令生效时按命令中的有效电平写无效电平），随后订阅 IMU Topic 与命令 Topic。相机触发输入为低电平有效时，从上电到第一条命令生效这段时间引脚处于有效电平，接线时需注意。两个订阅都是同步回调，在发布者的上下文中执行，线程或中断均可。状态机只由 IMU 回调访问：命令回调把命令放进单格信箱，下一条 IMU 消息到达时取出执行；信箱中已有命令时新命令被丢弃，由上位机超时重发（上位机同一时刻只有一条未确认命令，相邻两条命令的间隔远大于一个 IMU 周期）。事件通过 `PublishFromCallback` 发布。
 
 CameraSync uses the timestamps of the IMU Topic messages as its clock and outputs a camera trigger pulse on one GPIO every period. Each trigger edge actually emitted publishes a `FRAME_TRIGGER` event stamped with the time of the IMU message that produced it, from which the host obtains the trigger time of every image. The host sends `STOP_TRIGGER` and `START_TRIGGER` on the command Topic; each command takes effect at the next IMU message and is answered with an ACK.
 
-Upon construction, the GPIO is configured as push-pull output and driven low (regardless of the active level; the first command to apply writes the inactive level of the active level it carries), and the IMU Topic and the command Topic are subscribed. Both subscriptions are synchronous callbacks that run on the publisher's thread, and the state machine is accessed under one Mutex, so both Topics are published from thread context. GPIO writes and event publication run after the lock is released, and events are published with `PublishFromCallback`.
+Upon construction, the GPIO is configured as push-pull output and driven low (regardless of the active level; the first command to apply writes the inactive level of the active level it carries), and the IMU Topic and the command Topic are subscribed. With an active-low camera trigger input the pin sits at the active level from power-up until the first command applies, which the wiring has to allow for. Both subscriptions are synchronous callbacks that run in the publisher's context, thread or interrupt. Only the IMU callback touches the state machine: the command callback puts the command into a one-slot mailbox that the next IMU message takes and executes; a command arriving while the mailbox is full is dropped and resent by the host after its timeout (the host keeps at most one unacknowledged command, so two commands are always far more than one IMU period apart). Events are published with `PublishFromCallback`.
 
 ## 2. 通信协议 / Wire Protocol
 
@@ -105,7 +105,7 @@ The trigger pulse returns to the inactive level when the next IMU message arrive
 
 - 与待生效命令同键的副本不再登记，副本中的其他字段可以不同。
 - 已有待生效命令时，不同键的新命令被丢弃，不回复 ACK。
-- 与最近一条已生效命令同键的副本使模块重发该命令的原 ACK，时间戳也是原来的。
+- 与最近一条已生效命令同键的副本使模块在下一条 IMU 消息到达时重发该命令的原 ACK，时间戳也是原来的。
 - 重发 ACK 不重复 GPIO 操作，触发相位和边沿序号保持不变。
 - `FRAME_TRIGGER` 事件不改变缓存的 ACK。
 - `STOPPED` 状态下带新序号的 STOP 按新命令处理。
@@ -118,7 +118,7 @@ The idempotence key of a command is `{operation, seq}`. The Module keeps one pen
 
 - A copy of the pending command with the same key is not registered again; the other fields of the copy may differ.
 - While a command is pending, a new command with a different key is discarded without an ACK.
-- A copy of the last applied command with the same key makes the Module resend that command's original ACK, with the original timestamp.
+- A copy of the last applied command with the same key makes the Module resend that command's original ACK at the next IMU message, with the original timestamp.
 - A resent ACK repeats no GPIO operation and leaves the trigger phase and the edge numbering unchanged.
 - `FRAME_TRIGGER` events do not change the cached ACK.
 - In the `STOPPED` state, a STOP with a new sequence number is processed as a new command.
